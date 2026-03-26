@@ -1,6 +1,6 @@
 import os
 import hashlib
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from services.validator import validate_url
 from services.downloader import download_video
@@ -90,7 +90,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_progress_message(status_msg, f"❌ {validation_result['error']}")
         return
         
-    await update_progress_message(status_msg, "⏳ Downloading video...")
+    await update_progress_message(status_msg, "⏳ Downloading media...")
+    
     # Download
     logger.info(f"Starting media download for: {url}")
     download_result = await download_video(url)
@@ -106,11 +107,9 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update_progress_message(status_msg, f"📤 Uploading {len(media_items)} item(s) to Telegram...")
     logger.info(f"Successfully downloaded {len(media_items)} items. Uploading to Telegram for {url}")
     
-    from telegram import InputMediaPhoto, InputMediaVideo
-    
     try:
         if len(media_items) == 1:
-            # Single item logic (keep existing behavior but adapted to the list)
+            # Single item logic
             item = media_items[0]
             filepath = item["filepath"]
             thumbnail = item.get("thumbnail")
@@ -121,20 +120,20 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             async def send_single_media(as_document=False, use_thumb=True):
                 thumb_path = thumbnail if use_thumb and thumbnail and os.path.exists(thumbnail) and thumbnail.endswith('.jpg') else None
                 if item["type"] == "photo":
-                    return await update.message.reply_photo(photo=filepath, caption="✅ Here is your photo!", reply_markup=reply_markup)
+                    return await update.message.reply_photo(photo=open(filepath, 'rb'), caption="✅ Here is your photo!", reply_markup=reply_markup)
                 
                 if as_document:
                     return await update.message.reply_document(
-                        document=filepath,
+                        document=open(filepath, 'rb'),
                         caption="✅ Here is your media (sent as document due to format)! ",
                         reply_markup=reply_markup
                     )
                 else:
                     return await update.message.reply_video(
-                        video=filepath,
+                        video=open(filepath, 'rb'),
                         caption="✅ Here is your video!",
                         supports_streaming=True,
-                        thumbnail=thumb_path,
+                        thumbnail=open(thumb_path, 'rb') if thumb_path else None,
                         reply_markup=reply_markup
                     )
 
@@ -151,30 +150,36 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except: pass
         else:
             # Multi-item logic (Media Group)
-            # Split into chunks of 10 (Telegram limit)
             for i in range(0, len(media_items), 10):
                 chunk = media_items[i:i + 10]
                 media_group = []
+                files_to_close = []
                 for idx, item in enumerate(chunk):
                     caption = f"✅ Media {i+idx+1}/{len(media_items)}" if idx == 0 else ""
+                    f = open(item["filepath"], 'rb')
+                    files_to_close.append(f)
+                    
                     if item["type"] == "video":
+                        thumb_f = None
+                        if item.get("thumbnail") and os.path.exists(item["thumbnail"]):
+                            thumb_f = open(item["thumbnail"], 'rb')
+                            files_to_close.append(thumb_f)
+                            
                         media_group.append(InputMediaVideo(
-                            media=open(item["filepath"], 'rb'),
+                            media=f,
                             caption=caption,
                             supports_streaming=True,
-                            thumbnail=open(item["thumbnail"], 'rb') if item.get("thumbnail") and os.path.exists(item["thumbnail"]) else None
+                            thumbnail=thumb_f
                         ))
                     else:
                         media_group.append(InputMediaPhoto(
-                            media=open(item["filepath"], 'rb'),
+                            media=f,
                             caption=caption
                         ))
                 
                 await update.message.reply_media_group(media=media_group)
-                # Close all open files in media_group
-                for m in media_group:
-                    if hasattr(m.media, 'close'): m.media.close()
-                    if hasattr(m, 'thumbnail') and m.thumbnail and hasattr(m.thumbnail, 'close'): m.thumbnail.close()
+                for f in files_to_close:
+                    f.close()
 
         await status_msg.delete()
         logger.info(f"Successfully sent all media for {url}")
@@ -188,4 +193,3 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_remove(item["filepath"])
             if item.get("thumbnail"):
                 safe_remove(item["thumbnail"])
-```
