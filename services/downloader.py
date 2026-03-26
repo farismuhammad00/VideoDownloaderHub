@@ -43,11 +43,12 @@ async def retry_download(func, *args, retries=3, **kwargs):
     return {"status": "error", "error": "❌ Failed to download after multiple attempts. Please try again later."}
 
 async def _download_video_impl(url: str) -> dict:
-    file_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
+    # Use absolute path for cookies.txt
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(current_dir)
+    cookie_path = os.path.join(root_dir, 'cookies.txt')
     
-    ydl_opts = {
-        'outtmpl': output_template,
+    ydl_opts_base = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'writethumbnail': True,
@@ -59,40 +60,87 @@ async def _download_video_impl(url: str) -> dict:
         'match_filter': download_filter,
     }
     
-    # Use absolute path for cookies.txt
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(current_dir)
-    cookie_path = os.path.join(root_dir, 'cookies.txt')
-    
     if os.path.exists(cookie_path):
-        ydl_opts['cookiefile'] = cookie_path
-    
-    def extract_and_download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            return ydl.prepare_filename(info), info
-            
+        ydl_opts_base['cookiefile'] = cookie_path
+        
     try:
         loop = asyncio.get_running_loop()
-        filepath, info = await loop.run_in_executor(None, extract_and_download)
         
-        thumbnail_path = filepath.rsplit('.', 1)[0] + '.jpg'
-        if not os.path.exists(thumbnail_path):
-            thumbnail_path = filepath.rsplit('.', 1)[0] + '.webp'
-            if not os.path.exists(thumbnail_path):
-                thumbnail_path = None
+        # 1. Extract Info first without downloading to see structure
+        def get_info():
+            with yt_dlp.YoutubeDL(ydl_opts_base) as ydl:
+                return ydl.extract_info(url, download=False)
+        
+        info = await loop.run_in_executor(None, get_info)
+        
+        if not info:
+            return {"status": "error", "error": "Could not extract media info."}
+
+        # 2. Flatten entries
+        entries = info.get('entries', [info]) if 'entries' in info else [info]
+        media_items = []
+        
+        for entry in entries:
+            file_id = str(uuid.uuid4())
+            output_template = os.path.join(DOWNLOAD_DIR, f"{file_id}.%(ext)s")
+            
+            # Decide if it's a video or photo
+            vcodec = entry.get('vcodec')
+            is_video = vcodec is not None and vcodec != 'none'
+            # Some extractors for images might not have vcodec at all
+            if not is_video and entry.get('url') and ('.jpg' in entry['url'] or '.png' in entry['url'] or entry.get('ext') in ['jpg', 'png', 'jpeg', 'webp']):
+                is_photo = True
+            else:
+                is_photo = False
+                # If it's not explicitly a photo but has no vcodec, it might still be a video if it has formats
+                if not is_video and entry.get('formats'):
+                    is_video = True
+
+            # 3. Download the specific entry
+            item_ydl_opts = ydl_opts_base.copy()
+            item_ydl_opts['outtmpl'] = output_template
+            
+            def download_entry(entry_url):
+                with yt_dlp.YoutubeDL(item_ydl_opts) as ydl:
+                    # We use the original entry URL or the direct URL
+                    download_url = entry_url if 'http' in entry_url else url
+                    item_info = ydl.extract_info(download_url, download=True)
+                    return ydl.prepare_filename(item_info), item_info
+
+            try:
+                # If entry has a direct URL, use it, otherwise use the entry's ID if it's a sub-id
+                entry_url = entry.get('webpage_url') or entry.get('url') or url
+                filepath, item_info = await loop.run_in_executor(None, download_entry, entry_url)
                 
+                thumbnail_path = filepath.rsplit('.', 1)[0] + '.jpg'
+                if not os.path.exists(thumbnail_path):
+                    thumbnail_path = filepath.rsplit('.', 1)[0] + '.webp'
+                    if not os.path.exists(thumbnail_path):
+                        thumbnail_path = None
+                
+                media_items.append({
+                    "type": "video" if is_video else "photo",
+                    "filepath": filepath,
+                    "title": item_info.get('title', 'Media'),
+                    "duration": item_info.get('duration', 0),
+                    "thumbnail": thumbnail_path
+                })
+            except Exception as e:
+                logger.warning(f"Failed to download entry {entry.get('id')}: {e}")
+                continue
+
+        if not media_items:
+            return {"status": "error", "error": "No downloadable media found in this post."}
+            
         return {
             "status": "success",
-            "filepath": filepath,
-            "title": info.get('title', 'Video'),
-            "duration": info.get('duration', 0),
-            "thumbnail": thumbnail_path
+            "media": media_items
         }
+        
     except Exception as e:
         error_str = str(e)
         if "max-filesize" in error_str.lower():
-            return {"status": "error", "error": f"Video is too large. Maximum size is {int(MAX_FILE_SIZE / (1024*1024))} MB."}
+            return {"status": "error", "error": f"Media is too large. Maximum size is {int(MAX_FILE_SIZE / (1024*1024))} MB."}
         return {"status": "error", "error": error_str}
 
 async def download_video(url: str) -> dict:

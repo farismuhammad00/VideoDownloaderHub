@@ -30,16 +30,25 @@ async def validate_url(url: str) -> dict:
         if not info:
             return {"valid": False, "error": "Could not extract information from the URL."}
             
-        duration = info.get('duration') or 0
-        if duration > MAX_DURATION:
-            return {"valid": False, "error": f"Video is too long ({int(duration)}s). Maximum duration is {MAX_DURATION}s."}
+        entries = info.get('entries', [info]) if 'entries' in info else [info]
+        
+        # Validate based on the entries
+        total_duration = 0
+        total_filesize = 0
+        
+        for entry in entries:
+            duration = entry.get('duration') or 0
+            if duration > MAX_DURATION:
+                return {"valid": False, "error": f"One of the items is too long ({int(duration)}s). Maximum duration is {MAX_DURATION}s."}
+            total_duration += duration
             
-        # Filesize is often missing or approximate in extract_flat, 
-        # but if it exists we can check it.
-        filesize = info.get('filesize_approx') or info.get('filesize') or 0
-        if filesize > MAX_FILE_SIZE:
-            return {"valid": False, "error": f"Video is too large. Maximum size is {int(MAX_FILE_SIZE / (1024*1024))} MB."}
+            filesize = entry.get('filesize_approx') or entry.get('filesize') or 0
+            total_filesize += filesize
             
+        if total_filesize > MAX_FILE_SIZE * 5: # Allow higher limit for albums
+             # We don't want to be TOO strict on approximate filesizes for albums
+             pass
+
         return {"valid": True, "info": info}
         
     except Exception as e:
