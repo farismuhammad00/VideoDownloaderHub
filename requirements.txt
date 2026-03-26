@@ -1,0 +1,7 @@
+python-telegram-bot[job-queue]>=20.8
+yt-dlp>=2025.1.15
+fastapi>=0.110.0
+uvicorn>=0.29.0
+ffmpeg-python>=0.2.0
+python-dotenv>=1.0.1
+redis>=5.0.0
