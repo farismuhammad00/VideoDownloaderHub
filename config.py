@@ -3,9 +3,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip().lstrip('=')
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379").strip().lstrip('=')
 
 PORT = int(os.getenv("PORT", "8000"))
 
